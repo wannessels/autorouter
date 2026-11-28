@@ -65,12 +65,20 @@ def candidates(version):
         settings = [os.path.join(cfg, "kicad", version)]
         cch = os.environ.get("KICAD_CACHE_HOME") or os.environ.get("XDG_CACHE_HOME") or home(".cache")
         cache = [os.path.join(cch, "kicad", version)]
-        # Flatpak KiCad keeps everything inside its sandbox
-        fp = home(".var", "app", "org.kicad.KiCad")
-        plugin_dirs.append(os.path.join(fp, "data", "kicad", version, "plugins"))
-        settings.append(os.path.join(fp, "config", "kicad", version))
-        cache.append(os.path.join(fp, "cache", "kicad", version))
+        fp_plugins, fp_settings, fp_cache = flatpak_dirs(version)
+        plugin_dirs.append(fp_plugins)
+        settings.append(fp_settings)
+        cache.append(fp_cache)
     return plugin_dirs, settings, cache
+
+
+def flatpak_dirs(version):
+    """(plugins, settings, cache) of Flatpak KiCad (org.kicad.KiCad), which keeps everything
+    inside its sandbox and cannot see ~/.local/share/kicad."""
+    fp = home(".var", "app", "org.kicad.KiCad")
+    return (os.path.join(fp, "data", "kicad", version, "plugins"),
+            os.path.join(fp, "config", "kicad", version),
+            os.path.join(fp, "cache", "kicad", version))
 
 
 IPC_CONTROL = "control.IPCPlugin"   # KiCad 10's toolbar region for plugin buttons
@@ -177,6 +185,13 @@ def main():
             if os.path.isdir(os.path.join(scripting, "kicad_autorouter")):
                 print(f"{INFO}   It IS in {scripting} - that is the OLD (KiCad 7/8) location.")
             problems.append("copy the kicad_autorouter folder into " + plugin_dirs[0])
+        if platform.system() == "Linux":
+            fp_plugins, fp_settings, _ = flatpak_dirs(version)
+            if os.path.isdir(fp_settings) and not any(d == fp_plugins for d, _ in ours):
+                print(f"{BAD} Flatpak KiCad is installed, but the plugin is not in its own folder:"
+                      f" {fp_plugins} (it cannot see ~/.local/share/kicad)")
+                problems.append("run install_plugin.py again, or copy the kicad_autorouter folder into "
+                                + fp_plugins)
 
         classic = os.path.join(os.path.dirname(plugin_dirs[0]), "scripting", "plugins", "kicad_autorouter")
         if os.path.isdir(classic):

@@ -226,6 +226,7 @@ Then start KiCad, open a board, and give it a minute the first time.
    | Windows | `Documents\KiCad\10.0\plugins\` |
    | macOS | `~/Documents/KiCad/10.0/plugins/` |
    | Linux | `~/.local/share/kicad/10.0/plugins/` |
+   | Linux, Flatpak KiCad | `~/.var/app/org.kicad.KiCad/data/kicad/10.0/plugins/` |
 
    You should end up with `.../10.0/plugins/kicad_autorouter/plugin.json`.
    **Note: this is `plugins`, not `scripting/plugins`.** Subfolders are fine.

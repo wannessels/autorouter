@@ -113,16 +113,17 @@ def install_launcher(version: str, plugin_dir: str, dest: str) -> None:
         print(f"  could not install the toolbar launcher ({exc}) - run_autorouter.bat still works")
 
 
-def remove_strays(version: str, keep: str) -> None:
+def remove_strays(version: str, keep) -> None:
     """Other copies of this plugin (from earlier attempts) confuse KiCad: it searches the
     whole plugins tree, and two plugins with the same identifier collide."""
     plugin_dirs, _, _ = check_install.candidates(version)
+    keep = {os.path.abspath(k) for k in keep}
     strays = []
     for root in plugin_dirs:
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            if os.path.abspath(dirpath) == os.path.abspath(keep):
+            if os.path.abspath(dirpath) in keep:
                 dirnames[:] = []
                 continue
             if os.path.basename(dirpath) == "kicad_autorouter" and (
@@ -226,13 +227,22 @@ def main() -> int:
         print("  KiCad is running. Close ALL KiCad windows first (KiCad rewrites its settings when it\n"
               "  exits, which would undo the API setting), then run this again.")
         return 1
-    dest = copy_plugin(plugin_dirs[0])
-    remove_classic(plugin_dirs[0])
-    install_launcher(version, plugin_dirs[0], dest)
-    remove_strays(version, dest)
-    enable_api(settings_dirs)
-    fix_toolbar(settings_dirs)
-    show_button(settings_dirs)
+    roots = [(plugin_dirs[0], settings_dirs)]
+    if platform.system() == "Linux":
+        fp_plugins, fp_settings, _ = check_install.flatpak_dirs(version)
+        if os.path.isdir(fp_settings):
+            step(f"Flatpak KiCad found: also installing into {fp_plugins}")
+            roots.append((fp_plugins, [fp_settings]))
+    dests = []
+    for plugin_dir, settings in roots:
+        dest = copy_plugin(plugin_dir)
+        dests.append(dest)
+        remove_classic(plugin_dir)
+        install_launcher(version, plugin_dir, dest)
+        enable_api(settings)
+        fix_toolbar(settings)
+        show_button(settings)
+    remove_strays(version, dests)
     print("\nChecking the installation:\n")
     check_install.main()
     print("\nNow start KiCad and open a board in the PCB editor. The first time, wait about a minute\n"

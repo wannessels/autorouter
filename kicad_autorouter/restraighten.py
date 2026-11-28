@@ -566,7 +566,7 @@ def straighten_result(board: Board, result: RouteResult, settings: RouteSettings
             continue
         n2 = res2.nets[name]
         m = NetRoute(name, list(n2.segments), list(n2.vias), nr.complete, nr.failed_connections,
-                     list(n2.widths), list(nr.why))
+                     list(n2.widths), list(nr.why), list(nr.pour_pads))
         for t in new_t:                     # pieces of the new copper that stayed as they were
             if t.net == name and id(t) not in gone:
                 m.segments.append((t.x1, t.y1, t.x2, t.y2, t.layer))

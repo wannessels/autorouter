@@ -168,6 +168,7 @@ class NetRoute:
     failed_connections: int = 0
     widths: List[float] = field(default_factory=list)   # per segment (net-class width), mm
     why: List[str] = field(default_factory=list)        # why connections failed (if any)
+    pour_pads: List[str] = field(default_factory=list)  # pads joined only by the pour estimate
 
     def width(self, k: int, default: float) -> float:
         return self.widths[k] if k < len(self.widths) else default
@@ -190,8 +191,15 @@ class RouteResult:
 
     def summary(self) -> str:
         total = len(self.nets)
-        lines = [f"Routed {self.complete_nets}/{total} nets completely in "
-                 f"{len(self.passes)} pass(es){' (converged)' if self.converged else ''}."]
+        pour = {n.name: n.pour_pads for n in self.nets.values() if n.pour_pads}
+        n_pour = sum(len(v) for v in pour.values())
+        passes = f"{len(self.passes)} pass(es){' (converged)' if self.converged else ''}"
+        if n_pour:
+            lines = [f"Routed {self.complete_nets}/{total} nets in {passes}; {n_pour} pad(s) are joined only "
+                     "by a pour, which the router estimates. Refill the zones and check KiCad's DRC:"]
+            lines += [f"  {name}: {', '.join(pads)}" for name, pads in sorted(pour.items())]
+        else:
+            lines = [f"Routed {self.complete_nets}/{total} nets completely in {passes}."]
         segs = sum(len(n.segments) for n in self.nets.values())
         vias = sum(len(n.vias) for n in self.nets.values())
         lines.append(f"{segs} track segments, {vias} vias.")
@@ -3257,6 +3265,9 @@ class Router:
                         if key not in seen_v:
                             seen_v.add(key)
                             nr.vias.append(v)
+            if j.fanout_layers is not None:
+                nr.pour_pads = sorted(t.label for t in j.terminals if t.label and
+                                      not any(c in t.cells for p in j.paths for c in p))
             nr.complete = j.failed == 0 and j.unreachable == 0 and j.name not in removed
             nr.failed_connections = j.failed + j.unreachable
             if j.fail_notes and not nr.complete:

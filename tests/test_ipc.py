@@ -72,7 +72,7 @@ def test_ipc_routes_all_and_commits_once():
     _run(session, {"scope": "all", "fill": True})
     log = "\n".join(session.log)
     assert "ERROR" not in log, log
-    assert "Routed 12/12 nets completely" in log
+    assert "Routed 12/12 nets" in log
     assert [c[0] for c in fake.commits] == ["pushed: Visible Autorouter"]     # exactly one undo step
     assert getattr(fake, "refilled", False)
     res = _to_result(fake.created, s)

@@ -255,6 +255,23 @@ def test_the_order_of_the_items_in_the_file_does_not_change_the_routing():
     assert _copper(route(b.sort_items(), s, nets=["D1", "D2"])) == first
 
 
+def test_pads_joined_only_by_the_pour_are_named_not_called_complete():
+    from kicad_autorouter.model import Board, Pad
+    ring = [(2, 2), (38, 2), (38, 28), (2, 28)]
+    b = Board(["F.Cu", "B.Cu"], rect_outline(0, 0, 40, 30),
+              [Pad("GND", 10, 10, 1, 1, "rect", 0, {"B.Cu"}, ref="C1.2"),
+               Pad("GND", 30, 20, 1, 1, "rect", 0, {"F.Cu"}, ref="C2.2"),
+               Pad("SIG", 5, 15, 1, 1, "rect", 0, {"F.Cu"}, ref="J1.1"),
+               Pad("SIG", 35, 15, 1, 1, "rect", 0, {"F.Cu"}, ref="J2.1")],
+              zone_nets={"GND"}, zone_layers={"GND": {"B.Cu"}}, zone_outlines={"GND": [({"B.Cu"}, [ring])]},
+              zone_priority={"GND": [0]})
+    res = route(b, RouteSettings())
+    assert res.nets["GND"].pour_pads == ["C1.2"]               # C2.2 has its own via down to the pour
+    head = res.summary().splitlines()
+    assert "completely" not in head[0] and "joined only by a pour" in head[0]
+    assert head[1] == "  GND: C1.2"
+
+
 def test_failed_net_says_what_walls_it_in():
     """A pad boxed in by another net's existing track: the summary names the pad and
     the copper, instead of just 'Incomplete'."""

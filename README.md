@@ -378,7 +378,8 @@ What's been tested:
 * Through vias only. No differential pairs, no length tuning. No via-in-pad.
 * Pours are estimated on the grid. Occasionally a pad the router counts as
   joined by a pour is not reached when KiCad fills the zone: run KiCad's DRC
-  after routing a board with pours.
+  after routing a board with pours. The summary names every pad that only the
+  pour joins, and does not call such a run complete.
 * macOS has no compiled core yet (it uses the slower Python search).
 * Very crowded spots (e.g. a 0.5 mm-pitch regulator surrounded by its
   resistors on a 2-layer board) can leave a few short nets to finish by hand;

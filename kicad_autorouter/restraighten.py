@@ -65,14 +65,20 @@ def detect_grid(board: Board, settings: RouteSettings) -> RouteSettings:
     if not pts:
         return s
     bx0, by0, _, _ = board.bbox()
+    from .problem import grid_frame
+    pa, ax0, ay0 = grid_frame(board, s)                   # the grid the router lines up
 
-    def fit(p_):
+    def fit(p_, ox=bx0, oy=by0):
         ok = 0
         for (x, y) in pts:
-            kx, ky = round((x - bx0) / p_), round((y - by0) / p_)
-            if abs(bx0 + kx * p_ - x) <= TOL and abs(by0 + ky * p_ - y) <= TOL:
+            kx, ky = round((x - ox) / p_), round((y - oy) / p_)
+            if abs(ox + kx * p_ - x) <= TOL and abs(oy + ky * p_ - y) <= TOL:
                 ok += 1
         return ok / len(pts)
+    if fit(pa, ax0, ay0) >= 0.8:
+        if abs(pa - s.pitch()) > 1e-9:
+            s.grid = pa                                   # (the same frame again, from now on)
+        return s                                          # the router's own grid fits: keep it
     best = (fit(s.pitch()), s.pitch())
     if best[0] >= 0.8:
         return s                                          # the board's own rules fit: keep them
@@ -274,11 +280,12 @@ def straighten_existing(board: Board, settings: RouteSettings, nets: Optional[Li
     names = [n for n in (nets or with_tracks) if n in set(with_tracks)]
     sel = set(names)
     from .pinentry import FIXED_LINKS, seg_key
-    from .problem import Grid
+    from .problem import Grid, grid_frame
     layers = [l for l in (s.layers or board.copper_layers) if l in board.copper_layers] or list(board.copper_layers)
-    bx0, by0, bx1, by1 = board.bbox()
-    p_ = s.pitch()
-    g0 = Grid(bx0, by0, p_, int(math.floor((bx1 - bx0) / p_)) + 1, int(math.floor((by1 - by0) / p_)) + 1, layers)
+    p_, bx0, by0 = grid_frame(board, s)
+    _, _, bx1, by1 = board.bbox()
+    g0 = Grid(bx0, by0, p_, int(math.floor((bx1 - bx0) / p_ + 1e-9)) + 1,
+              int(math.floor((by1 - by0) / p_ + 1e-9)) + 1, layers)
     frozen = set(frozen or ())
     pour = set(board.zone_nets) if s.skip_zone_nets else set()
     frozen |= {id(x) for x in list(board.tracks) + list(board.vias) if x.net in sel and x.net in pour}
@@ -308,6 +315,17 @@ def straighten_existing(board: Board, settings: RouteSettings, nets: Optional[Li
                  seg_key(t.x1, t.y1, t.x2, t.y2, t.layer) in FIXED_LINKS]
     b2.vias = [v for v in board.vias if v.net not in sel or id(v) in frozen]
     pb = build_problem(b2, s, names)
+    # a net the problem has no job for (a pour net, e.g. GND) is not rebuilt: its copper
+    # must stay on the board as an obstacle - taken off, nothing booked it, and UGND was
+    # straightened right over a GND track (tracks_crossing in KiCad's DRC)
+    jobs_ = {j.name for j in pb.nets}
+    if any(n not in jobs_ for n in names):
+        names = [n for n in names if n in jobs_]
+        sel = set(names)
+        b2.tracks = [t for t in board.tracks if t.net not in sel or id(t) in frozen or
+                     seg_key(t.x1, t.y1, t.x2, t.y2, t.layer) in FIXED_LINKS]
+        b2.vias = [v for v in board.vias if v.net not in sel or id(v) in frozen]
+        pb = build_problem(b2, s, names)
     g = pb.grid
     assert (g.x0, g.y0, g.nx, g.ny) == (g0.x0, g0.y0, g0.nx, g0.ny)
     plane = g.plane

@@ -69,6 +69,29 @@ def _rect_like(pts) -> Optional[Tuple[float, float, float, float, str]]:
     return (x0 + x1) / 2, (y0 + y1) / 2, w, h, shape
 
 
+def _pad_outline(p) -> List[List[float]]:
+    """A pad without a polygon, as one for the view: its rectangle, or its oval (stadium)."""
+    a = math.radians(p.angle)
+    ca, sa = math.cos(a), math.sin(a)
+    hw, hh = p.w / 2, p.h / 2
+    if p.shape == "oval":
+        r = min(hw, hh)
+        pts = []
+        if hw >= hh:        # round ends left and right
+            for cx_, a0 in ((hw - r, -90), (-(hw - r), 90)):
+                for k in range(9):
+                    t = math.radians(a0 + 180 * k / 8)
+                    pts.append((cx_ + r * math.cos(t), r * math.sin(t)))
+        else:               # round ends top and bottom
+            for cy_, a0 in ((hh - r, 0), (-(hh - r), 180)):
+                for k in range(9):
+                    t = math.radians(a0 + 180 * k / 8)
+                    pts.append((r * math.cos(t), cy_ + r * math.sin(t)))
+    else:
+        pts = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    return [[round(p.x + kx * ca + ky * sa, 4), round(p.y - kx * sa + ky * ca, 4)] for kx, ky in pts]
+
+
 def _poly_points(pwh) -> List[Tuple[float, float]]:
     pts: List[Tuple[float, float]] = []
     for node in pwh.outline.nodes:
@@ -559,8 +582,11 @@ class Session:
             if p.poly:
                 for ring in p.rings():
                     pads.append({"poly": [[round(x, 4), round(y, 4)] for x, y in ring], "net": p.net})
-            else:
+            elif p.shape == "circle" or abs(p.w - p.h) < 1e-6 and p.shape == "oval":
                 pads.append({"c": [p.x, p.y], "r": max(p.w, p.h) / 2, "net": p.net})
+            else:   # rectangles (and rounded ones) and ovals in their real shape - drawn as a
+                # circle as wide as the long side, SMD pads looked like through-hole pins
+                pads.append({"poly": _pad_outline(p), "net": p.net})
         return {"outline": b.outline, "pads": pads, "bbox": b.bbox(), "layers": b.copper_layers,
                 "selected": sorted(self.ipc.selected), "nets": b.nets(),
                 "settings": self.ipc.settings.__dict__,
@@ -588,6 +614,7 @@ class Session:
         s.fanout_zone_nets = bool(opts.get("fanout", True))
         s.skip_zone_nets = not bool(opts.get("pour_tracks", False))
         s.tracks_on_planes = bool(opts.get("tracks_on_planes", False))
+        s.pin_gaps = bool(opts.get("pin_gaps", False))
         scope = opts.get("scope", "unrouted")
         rip = bool(opts.get("rip"))
         if scope == "selected" and self.ipc.selected:
@@ -615,6 +642,11 @@ class Session:
             from . import __build__, __version__
             from .pinentry import axis_pin
             self.say(f"Visible Autorouter {__version__} ({__build__})")
+            try:
+                doc = self.ipc.kb._doc
+                self.say(f"Board: {doc.board_filename}  ({doc.project.path})")
+            except Exception:
+                pass
             board = self.ipc.board
             st_ = getattr(self.ipc, "ref_stats", None)
             if st_:
@@ -1176,12 +1208,74 @@ def serve(ipc: IpcBoard, open_browser: bool = True, port: int = 0) -> None:
     _close_app_window(window, profile)
 
 
+def _board_path(doc) -> str:
+    """Full path of the board a KiCad document specifier names ('' if unknown)."""
+    try:
+        name = doc.board_filename
+        folder = doc.project.path if doc.HasField("project") else ""
+        return os.path.normcase(os.path.normpath(os.path.join(folder, name))) if name else ""
+    except Exception:
+        return ""
+
+
+def _api_sockets():
+    """Every KiCad API socket on this machine: the one KiCad named for us first (set when
+    KiCad itself starts the plugin), then the default one, then those of other KiCad
+    windows (a second KiCad cannot take api.sock and uses api-<pid>.sock)."""
+    import glob
+    import tempfile
+    out = []
+    env = os.environ.get("KICAD_API_SOCKET")
+    if env:
+        out.append(env)
+    dirs = [os.path.join(tempfile.gettempdir(), "kicad")]
+    if os.name != "nt":
+        dirs += ["/tmp/kicad", os.path.expanduser("~/.var/app/org.kicad.KiCad/cache/tmp/kicad")]
+    for d in dirs:
+        for f in sorted(glob.glob(os.path.join(d, "api*.sock")),
+                        key=lambda f: (os.path.basename(f) != "api.sock", f)):
+            out.append("ipc://" + f)
+    seen, uniq = set(), []
+    for x in out:
+        k = os.path.normcase(x)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(x)
+    return uniq
+
+
 def _connect(wait_s: float = 40.0):
-    """The open board, retrying while KiCad is busy (e.g. a dialog is still closing)."""
+    """The open board, retrying while KiCad is busy (e.g. a dialog is still closing).
+
+    With several KiCad windows open, the default connection reaches whichever KiCad was
+    started FIRST - and routed the old copy of a project open there (the classic
+    launcher button passes no connection details).  So when the board's file is known
+    (VISIBLE_AUTOROUTER_BOARD, set by the launcher), every running KiCad is asked and
+    the one that has exactly that board open is used."""
     from kipy import KiCad
+    from kipy.board import Board as _KBoard
+    from kipy.proto.common.types.base_types_pb2 import DocumentType
+    want = os.environ.get("VISIBLE_AUTOROUTER_BOARD", "")
+    want = os.path.normcase(os.path.normpath(want)) if want else ""
     t0 = time.time()
     while True:
         try:
+            if want:
+                found = []
+                for sock in _api_sockets():
+                    try:
+                        kicad = KiCad(socket_path=sock, client_name="visible-autorouter", timeout_ms=5000)
+                        docs = kicad.get_open_documents(DocumentType.DOCTYPE_PCB)
+                    except Exception:
+                        continue
+                    for doc in docs:
+                        found.append(_board_path(doc))
+                        if _board_path(doc) == want:
+                            kicad = KiCad(socket_path=sock, client_name="visible-autorouter",
+                                          timeout_ms=30000)
+                            return _KBoard(kicad._client, doc)
+                print(f"board {want} not found among open boards {found}; using the default",
+                      flush=True)
             kicad = KiCad(client_name="visible-autorouter", timeout_ms=30000)
             return kicad.get_board()
         except Exception as exc:

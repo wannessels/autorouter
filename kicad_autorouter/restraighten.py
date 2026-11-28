@@ -610,4 +610,63 @@ def straighten_result(board: Board, result: RouteResult, settings: RouteSettings
         reach_centres(board, out, s, kept_t, kept_v)     # every trace into a pad runs to its centre
     except Exception:
         pass
+    drop_dead_ends(board, out, kept_t, kept_v)
     return out, [x for x in replaced if id(x) in old_ids]
+
+
+def drop_dead_ends(board: Board, result: RouteResult, kept_t, kept_v) -> None:
+    """The last step: one via per spot, no via that joins only one layer, no track end that
+    touches nothing (a dead-end stub). Kept copper (kept_t, kept_v) and the net's pours
+    count as something to touch."""
+    from .model import _poly_distance
+    eps = 1e-6
+    for name, nr in result.nets.items():
+        pads = [p for p in board.pads if p.net == name]
+        old_t = [t for t in kept_t if t[6] == name]
+        old_v = [(v[0], v[1]) for v in kept_v if v[3] == name]
+        pours = [(ls, r) for ls, rings in board.zone_outlines.get(name, []) for r in rings]
+        seen = set()
+        vias = []
+        for v in nr.vias:
+            k = (round(v[0], 4), round(v[1], 4))
+            if k not in seen:
+                seen.add(k)
+                vias.append(v)
+        segs = [(sg, nr.width(k, None)) for k, sg in enumerate(nr.segments)]
+
+        def layers_at(x, y, skip=None):
+            """Copper layers on which something of the net reaches point (x, y)."""
+            out = set()
+            for i, (sg, _) in enumerate(segs):
+                if i != skip and seg_point_dist(x, y, *sg[:4]) < eps:
+                    out.add(sg[4])
+            for t in old_t:
+                if seg_point_dist(x, y, *t[:4]) < eps:
+                    out.add(t[4])
+            for p in pads:
+                if p.distance(x, y) <= eps:
+                    out |= p.layers
+            for ls, r in pours:
+                if _poly_distance(r, x, y) <= 0:
+                    out |= set(ls)
+            return out
+
+        def via_at(x, y):
+            return any(math.hypot(x - vx, y - vy) < eps for vx, vy in vias + old_v)
+        changed = True
+        while changed:
+            changed = False
+            for v in list(vias):
+                if len(layers_at(*v)) < 2 and not any(math.hypot(v[0] - ox, v[1] - oy) < eps for ox, oy in old_v):
+                    vias.remove(v)
+                    changed = True
+            for i in range(len(segs) - 1, -1, -1):
+                sg = segs[i][0]
+                for (x, y) in ((sg[0], sg[1]), (sg[2], sg[3])):
+                    if not via_at(x, y) and sg[4] not in layers_at(x, y, skip=i):
+                        del segs[i]
+                        changed = True
+                        break
+        nr.vias = vias
+        nr.segments = [sg for sg, _ in segs]
+        nr.widths = [w for _, w in segs if w is not None]     # (a missing width is a default one, at the end)

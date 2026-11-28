@@ -940,8 +940,6 @@ class Router:
 
     def _route_net(self, job: NetJob, pass_no: int) -> None:
         self._routed_ids.add(job.id)
-        g = self.pb.grid
-        plane, nx = g.plane, g.nx
         terms = job.terminals
         if job.fanout_layers is not None:
             self._route_fanout(job, pass_no)
@@ -960,6 +958,21 @@ class Router:
             pad_cells |= t.cells
         ends: Dict[int, Optional[int]] = {}   # free route end -> direction to continue in
         margin = 6 + 2 * pass_no
+        close_own_vias, reopen = self._own_via_spacing(job)
+        try:
+            self._connect_terms(job, pass_no, terms, left, tree, tree_pts, own, pad_cells, ends,
+                                margin, close_own_vias, reopen)
+        finally:
+            reopen()
+        job.resources = self._bookable(job, own)
+        for c in job.resources:
+            self.occ[c] += 1
+        self._book_keepout(job)
+
+    def _connect_terms(self, job, pass_no, terms, left, tree, tree_pts, own, pad_cells, ends,
+                       margin, close_own_vias, reopen) -> None:
+        g = self.pb.grid
+        plane, nx = g.plane, g.nx
         while left:
             k = min(left, key=lambda k: min((terms[k].cx - px) ** 2 + (terms[k].cy - py) ** 2
                                             for (px, py) in tree_pts))
@@ -982,6 +995,7 @@ class Router:
             # branching off the middle of an earlier route: at a right angle or wider
             br = branch_masks(job.paths, pad_cells | set(sdirs), plane, nx) if job.paths else None
             path = None
+            close_own_vias()
             corridor = self._corridor(job, pass_no)
             if corridor is not None:          # first try inside the global route's corridor
                 path, explored = self._astar(job, tree, tgt, None, own, source_dirs=sdirs, allowed=corridor,
@@ -1000,6 +1014,7 @@ class Router:
                 path, explored = self._astar(job, tree, tgt, None, own, source_dirs=sdirs, branch=br)
             if path is None and not hopeless:
                 path, explored = self._astar(job, tree, tgt, None, own, right_angles=True)
+            reopen()
             if path is None:
                 job.failed += 1
                 job.fail_notes.append(self._diagnose(
@@ -1032,10 +1047,38 @@ class Router:
             if self._cancel:
                 job.failed += len(left)          # stopped part-way: not complete
                 break
-        job.resources = self._bookable(job, own)
-        for c in job.resources:
-            self.occ[c] += 1
-        self._book_keepout(job)
+
+    def _own_via_spacing(self, job: NetJob):
+        """(close, reopen): a net's own vias may not sit side by side either (hole-to-hole
+        clearance). While a connection is routed, the via spots round the net's vias so far
+        are closed; a via on the very same spot stays open (it is the same via)."""
+        g = self.pb.grid
+        plane, nx, ny = g.plane, g.nx, g.ny
+        s_ = self.pb.settings
+        min_vv = s_.via_drill + max(s_.hole_to_hole, 0.25) + 0.01   # hole centre to centre
+        kv = int(min_vv / g.pitch)
+        near_v = [(dx, dy) for dy in range(-kv, kv + 1) for dx in range(-kv, kv + 1)
+                  if (dx or dy) and math.hypot(dx, dy) * g.pitch < min_vv]
+        via_owner = self.pb.via_owner
+        closed: List[Tuple[int, int]] = []
+
+        def close():
+            cols = {a % plane for p_ in job.paths for a, b in zip(p_, p_[1:]) if a // plane != b // plane}
+            for col in cols:
+                x0_, y0_ = col % nx, col // nx
+                for dx, dy in near_v:
+                    x_, y_ = x0_ + dx, y0_ + dy
+                    if 0 <= x_ < nx and 0 <= y_ < ny:
+                        q = y_ * nx + x_
+                        if q not in cols and via_owner[q] != BLOCKED:
+                            closed.append((q, via_owner[q]))
+                            via_owner[q] = BLOCKED
+
+        def reopen():
+            while closed:
+                q, v = closed.pop()
+                via_owner[q] = v
+        return close, reopen
 
     def _route_fanout(self, job: NetJob, pass_no: int) -> None:
         """Pour net: connect every pad the pour does not reach to the pour.
@@ -1129,33 +1172,7 @@ class Router:
         def ti_key(t):
             return min(t.cells)
 
-        # this net's own vias may not sit side by side either (hole-to-hole clearance):
-        # while a pad is routed, the via spots round the net's vias so far are closed
-        s_ = self.pb.settings
-        min_vv = s_.via_drill + max(s_.hole_to_hole, 0.25) + 0.01   # hole centre to centre
-        kv = int(min_vv / g.pitch)
-        near_v = [(dx, dy) for dy in range(-kv, kv + 1) for dx in range(-kv, kv + 1)
-                  if (dx or dy) and math.hypot(dx, dy) * g.pitch < min_vv]
-        via_owner = self.pb.via_owner
-        closed: List[Tuple[int, int]] = []
-
-        def close_round_own_vias():
-            cols = {a % plane for p_ in job.paths for a, b in zip(p_, p_[1:]) if a // plane != b // plane}
-            for col in cols:
-                x0_, y0_ = col % nx, col // nx
-                for dx, dy in near_v:
-                    x_, y_ = x0_ + dx, y0_ + dy
-                    if 0 <= x_ < nx and 0 <= y_ < ny:
-                        q = y_ * nx + x_
-                        if q not in cols and via_owner[q] != BLOCKED:
-                            closed.append((q, via_owner[q]))
-                            via_owner[q] = BLOCKED
-
-        def reopen():
-            while closed:
-                q, v = closed.pop()
-                via_owner[q] = v
-
+        close_round_own_vias, reopen = self._own_via_spacing(job)
         try:
             self._fanout_terms(job, pass_no, terms, goal, goal_box, own, pad_cells, all_layers,
                                plane_goal, via_paths, ti_key, touches, close_round_own_vias, reopen)

@@ -43,6 +43,23 @@ def _xy(v) -> Tuple[float, float]:
     return v.x / NM, v.y / NM
 
 
+def _skip_unknown_items() -> None:
+    """A footprint item newer than the installed kipy (ReferencePoint from KiCad 10.0.7 in
+    kipy < 0.9) raised NotImplementedError and nothing could be read: keep it unread."""
+    import kipy.board_types as bt
+    if getattr(bt.unwrap, "tolerant", False):
+        return
+    strict = bt.unwrap
+
+    def unwrap(message):
+        try:
+            return strict(message)
+        except NotImplementedError:
+            return message
+    unwrap.tolerant = True
+    bt.unwrap = unwrap
+
+
 # ======================================================================
 # kipy board  ->  model.Board
 # ======================================================================
@@ -155,6 +172,7 @@ class IpcBoard:
         from kipy.proto.board.board_types_pb2 import BoardLayer, PadType
         from kipy.util.board_layer import canonical_name, is_copper_layer
 
+        _skip_unknown_items()
         self.kb = kboard
         self.refs: Dict[int, object] = {}
         enabled = list(kboard.get_enabled_layers())

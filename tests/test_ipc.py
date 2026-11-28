@@ -81,6 +81,19 @@ def test_ipc_routes_all_and_commits_once():
     assert st["curve"][-1] == 0 and st["frame"]["paths"]
 
 
+def test_ipc_reads_footprints_with_item_types_kipy_does_not_know():
+    from google.protobuf.any_pb2 import Any
+    from kipy.board_types import FootprintInstance
+    model = PcbFile(DEMO).board()
+    fake = FakeKiCadBoard(model)
+    protos = [fp.proto for fp in fake.fps]
+    for p in protos:
+        p.definition.items.append(Any(type_url="type.googleapis.com/kiapi.board.types.FutureThing"))
+    fake.get_footprints = lambda: [FootprintInstance(proto=p) for p in protos]
+    ipc = IpcBoard(fake)
+    assert ipc.ref_stats[0] == ipc.ref_stats[1] == len(model.pads)
+
+
 def test_ipc_routes_only_selection():
     model = PcbFile(DEMO).board()
     fake = FakeKiCadBoard(model, selected_refs=("U1",))

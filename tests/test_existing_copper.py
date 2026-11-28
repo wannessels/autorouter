@@ -115,6 +115,28 @@ def test_kept_copper_is_an_obstacle_for_the_other_nets():
     assert connected(kept, after, "A", s.track_width)
 
 
+def test_pour_net_copper_inside_its_pour_is_an_obstacle_for_the_other_nets():
+    """GND's track sits inside its own pour, across the row A's pads stand on. The
+    clean-up has no job for GND (the pour joins its pads), so it never took GND's copper
+    off the board and put it back: A was straightened straight across it."""
+    s = RouteSettings()
+    g = grid_of(s)
+    x, y = g.center(45, 0)[0], g.center(0, 22)[1]
+    gnd = Track("GND", x, y - 1.5, x, y + 1.5, s.track_width, "F.Cu")
+    b, _ = detour_board(s, other=[gnd])
+    b.pads += [Pad("GND", x, y - 1.5, 1.0, 1.0, "rect", 0, {"F.Cu"}, ref="C1.1"),
+               Pad("GND", x, y + 1.5, 1.0, 1.0, "rect", 0, {"F.Cu"}, ref="C2.1")]
+    b.zone_nets = {"GND"}
+    b.zone_layers = {"GND": {"F.Cu"}}
+    b.zone_outlines = {"GND": [({"F.Cu"}, [[(x - 5, y - 5), (x + 5, y - 5), (x + 5, y + 5), (x - 5, y + 5)]])]}
+    b.zone_priority = {"GND": [0]}
+    res, replaced, _ = straighten_existing(b, s)
+    assert not any(t is gnd for t in replaced)
+    after = as_result(b, res, replaced)
+    assert clearance_violations(Board(b.copper_layers, b.outline, b.pads), after, s) == []
+    assert connected(Board(b.copper_layers, b.outline, b.pads), after, "A", s.track_width)
+
+
 # ------------------------------------------------------------------ fine grid
 @pytest.mark.parametrize("pitch", [0.15, 0.225])
 def test_a_grid_finer_than_width_plus_clearance_is_legal(pitch):

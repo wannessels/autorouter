@@ -458,12 +458,25 @@ class Router:
             return None, explored
         return list(ns.out[:n]), explored
 
-    def _astar(self, job: NetJob, sources: Set[int], targets: Optional[Set[int]],
-               bbox: Optional[Tuple[int, int, int, int]], own: Set[int],
-               target_layers: Optional[Set[int]] = None, goal: Optional[bytearray] = None,
-               source_dirs: Optional[Dict[int, int]] = None, allowed: Optional[bytearray] = None,
-               branch: Optional[Dict[int, int]] = None,
-               goal_box: Optional[Tuple[int, int, int, int]] = None, right_angles: bool = False):
+    def _astar(self, job: NetJob, *args, **kw):
+        if not job.via_bad:
+            return self._astar_open(job, *args, **kw)
+        vo = self.pb.via_owner
+        was = [vo[xy] for xy in job.via_bad]
+        for xy in job.via_bad:
+            vo[xy] = BLOCKED
+        try:
+            return self._astar_open(job, *args, **kw)
+        finally:
+            for xy, o in zip(job.via_bad, was):
+                vo[xy] = o
+
+    def _astar_open(self, job: NetJob, sources: Set[int], targets: Optional[Set[int]],
+                    bbox: Optional[Tuple[int, int, int, int]], own: Set[int],
+                    target_layers: Optional[Set[int]] = None, goal: Optional[bytearray] = None,
+                    source_dirs: Optional[Dict[int, int]] = None, allowed: Optional[bytearray] = None,
+                    branch: Optional[Dict[int, int]] = None,
+                    goal_box: Optional[Tuple[int, int, int, int]] = None, right_angles: bool = False):
         """Cheapest path from any source cell to any target cell.
 
         With ``target_layers`` instead of ``targets`` any usable cell on those
@@ -719,10 +732,16 @@ class Router:
             la, ra = divmod(a, plane)
             lb, rb = divmod(b, plane)
             if la != lb:   # via
+                if job is not None and job.via_fp:
+                    y0, x0 = divmod(ra, nx)
+                    cols = [(y0 + dy) * nx + x0 + dx for (dx, dy) in job.via_fp
+                            if 0 <= x0 + dx < nx and 0 <= y0 + dy < g.ny]
+                else:
+                    cols = [ra + off for off in self.fp_offsets]
                 for l in range(g.nl):
-                    base = l * plane + ra
-                    for off in self.fp_offsets:
-                        res.add(base + off)
+                    base = l * plane
+                    for q in cols:
+                        res.add(base + q)
                 continue
         return res
 

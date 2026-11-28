@@ -103,6 +103,10 @@ class NetJob:
     half_bad: Optional[bytearray] = None  # half-pitch map: 1 = too close to fixed copper
     half_x: int = 0
     half_plane: int = 0
+    # a net class with a bigger clearance: the cells its vias claim, and via spots that are
+    # too close to other nets' fixed copper for it (closed while it routes)
+    via_fp: Optional[List[Tuple[int, int]]] = None
+    via_bad: List[int] = field(default_factory=list)
 
     @property
     def supply(self) -> bool:
@@ -606,6 +610,8 @@ def build_problem(board: Board, settings: RouteSettings,
 
     w2 = s.track_width / 2.0
     vr = s.via_diameter / 2.0
+    # a new via's drill keeps hole_clearance from other nets' copper (drill-to-copper)
+    hole_reach = s.via_drill / 2.0 + s.hole_clearance + HALO_MARGIN
     owner = array('i', [FREE]) * grid.size        # typed: the compiled search reads it in place
 
     def sag(R: float) -> float:
@@ -676,7 +682,7 @@ def build_problem(board: Board, settings: RouteSettings,
             n = nid(pad.net)
             cl = max(s.clearance_for(pad.net), pad.clearance) + HALO_MARGIN
             r_trk = sag(cl + w2)
-            r_via = cl + vr
+            r_via = max(cl + vr, hole_reach)
             R = pad.radius() + max(r_trk, r_via)
             xr, yr = grid.cells_near(pad.x - R, pad.y - R, pad.x + R, pad.y + R)
             pad_l = [lidx[l] for l in pad.layers if l in lidx]
@@ -705,7 +711,7 @@ def build_problem(board: Board, settings: RouteSettings,
                     if d < vr and not s.allow_via_in_pad:
                         via_owner[y * nx + x] = BLOCKED
             if pad.drill > 0:   # the hole goes through every layer
-                hole_r = sag(pad.drill / 2 + cl + w2)
+                hole_r = sag(pad.drill / 2 + max(cl, s.hole_clearance + HALO_MARGIN) + w2)
                 xr, yr = grid.cells_near(pad.x - hole_r, pad.y - hole_r, pad.x + hole_r, pad.y + hole_r)
                 for y in yr:
                     for x in xr:
@@ -737,7 +743,7 @@ def build_problem(board: Board, settings: RouteSettings,
             l = lidx[t.layer]
             cl = s.clearance_for(t.net) + HALO_MARGIN
             r_trk = sag(t.width / 2 + cl + w2)
-            r_via = t.width / 2 + cl + vr
+            r_via = t.width / 2 + max(cl + vr, hole_reach)
             R = max(r_trk, r_via)
             xr, yr = grid.cells_near(min(t.x1, t.x2) - R, min(t.y1, t.y2) - R,
                                      max(t.x1, t.x2) + R, max(t.y1, t.y2) + R)
@@ -752,10 +758,11 @@ def build_problem(board: Board, settings: RouteSettings,
         for v in board.vias:
             n = nid(v.net)
             cl = s.clearance_for(v.net) + HALO_MARGIN
-            r_trk = sag(v.diameter / 2 + cl + w2)
-            r_via = v.diameter / 2 + cl + vr
+            vd2 = (v.drill or s.via_drill) / 2
+            r_trk = sag(max(v.diameter / 2 + cl, vd2 + s.hole_clearance + HALO_MARGIN) + w2)
+            r_via = max(v.diameter / 2 + max(cl + vr, hole_reach), vd2 + s.hole_clearance + HALO_MARGIN + vr)
             vl = [lidx[l] for l in (v.layers or layers) if l in lidx]
-            r_hole = (v.drill or s.via_drill) / 2 + s.via_drill / 2 + s.hole_to_hole + 0.01
+            r_hole = vd2 + s.via_drill / 2 + s.hole_to_hole + 0.01
             r_far = max(r_via, r_hole)
             xr, yr = grid.cells_near(v.x - r_far, v.y - r_far, v.x + r_far, v.y + r_far)
             for y in yr:
@@ -1046,7 +1053,7 @@ def build_problem(board: Board, settings: RouteSettings,
         zone_vias[net_ids[name]] = cols
 
     # ---- via footprint (cells a via claims on every layer)
-    R = vr + s.clearance + w2
+    R = max(vr + s.clearance, s.via_drill / 2 + s.hole_clearance) + w2
     k = int(math.ceil(R / p))
     fp = [(dx, dy) for dy in range(-k, k + 1) for dx in range(-k, k + 1)
           if math.hypot(dx, dy) * p < R - 1e-9]
@@ -1062,6 +1069,7 @@ def build_problem(board: Board, settings: RouteSettings,
     jobs = [j for j in jobs if j.terminals]
     for job in jobs:
         _net_class_claims(job, grid, owner, s, board, lidx, pad_cells_all)
+        _net_class_vias(job, grid, via_owner, s, board, lidx)
         if job.name in s.net_rules:
             W, C = s.net_rules[job.name]
             msg = f"net class: {W:.3f} mm ({W / 0.0254:.0f} mil) track, {max(C, s.clearance):.3f} mm clearance"
@@ -1093,6 +1101,46 @@ def _rows_to_bytes(rows: List[int], nx: int) -> bytes:
     for m in rows:
         out += format(m, "b").zfill(nx)[::-1][:nx].encode().translate(tr)
     return bytes(out)
+
+
+def _net_class_vias(job: NetJob, grid: Grid, via_owner, s: RouteSettings, board: Board,
+                    lidx: Dict[str, int]) -> None:
+    """Vias of a net whose class clearance C is bigger than the board's: the shared via map
+    keeps only each obstacle's own clearance from them."""
+    C = s.clearance_for(job.name)
+    if C <= s.clearance + 1e-9:
+        return
+    p = grid.pitch
+    vr = s.via_diameter / 2
+    R = max(vr + C, s.via_drill / 2 + s.hole_clearance) + s.track_width / 2
+    k = int(math.ceil(R / p))
+    job.via_fp = [(dx, dy) for dy in range(-k, k + 1) for dx in range(-k, k + 1)
+                  if math.hypot(dx, dy) * p < R - 1e-9]
+    nx = grid.nx
+    bad = set()
+
+    def close(x0, y0, x1, y1, dist, reach):
+        xr, yr = grid.cells_near(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+        for y in yr:
+            for x in xr:
+                xy = y * nx + x
+                if via_owner[xy] != BLOCKED and xy not in bad and dist(*grid.center(x, y)) < reach:
+                    bad.add(xy)
+    for pad in board.pads:
+        if pad.net != job.name or not pad.net:
+            reach = max(C, pad.clearance) + HALO_MARGIN + vr
+            Rp = pad.radius()
+            close(pad.x - Rp, pad.y - Rp, pad.x + Rp, pad.y + Rp, pad.distance, reach)
+    for t in board.tracks:
+        if t.net != job.name and t.layer in lidx:
+            close(min(t.x1, t.x2), min(t.y1, t.y2), max(t.x1, t.x2), max(t.y1, t.y2),
+                  lambda x, y, t=t: seg_point_dist(x, y, t.x1, t.y1, t.x2, t.y2),
+                  t.width / 2 + C + HALO_MARGIN + vr)
+    for v in board.vias:
+        if v.net != job.name:
+            close(v.x, v.y, v.x, v.y, lambda x, y, v=v: math.hypot(x - v.x, y - v.y),
+                  v.diameter / 2 + C + HALO_MARGIN + vr)
+    job.via_bad = sorted(bad)
 
 
 def _net_class_claims(job: NetJob, grid: Grid, owner: List[int], s: RouteSettings,
@@ -1194,7 +1242,8 @@ def _net_class_claims(job: NetJob, grid: Grid, owner: List[int], s: RouteSetting
         for v in board.vias:
             if v.net == job.name:
                 continue
-            R = v.diameter / 2 + grow(W2 + max(C, s.clearance_for(v.net)))
+            R = max(v.diameter / 2 + grow(W2 + max(C, s.clearance_for(v.net))),
+                    (v.drill or s.via_drill) / 2 + grow(W2 + s.hole_clearance))
             vl = [lidx[l] for l in (v.layers or grid.layers) if l in lidx]
             mark(("via", id(v), round(R, 6)), v.x - R, v.y - R, v.x + R, v.y + R,
                  lambda x, y, v=v, R=R: math.hypot(x - v.x, y - v.y) < R, vl)

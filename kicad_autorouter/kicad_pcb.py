@@ -452,8 +452,9 @@ class PcbFile:
                 if names[0] in cu and names[1] in cu:
                     i0, i1 = sorted((cu.index(names[0]), cu.index(names[1])))
                     vl = set(cu[i0:i1 + 1])
-            b.vias.append(Via(self._net_of(v), _f(at[1]), _f(at[2]), _f(size[1]) if size else 0.6, 0.0, vl,
-                              _locked(v)))
+            drill = _kid(v, "drill")
+            b.vias.append(Via(self._net_of(v), _f(at[1]), _f(at[2]), _f(size[1]) if size else 0.6,
+                              _f(drill[1]) if drill else 0.0, vl, _locked(v)))
         fp_zones = [z for fp in _kids(self.tree, "footprint") for z in _kids(fp, "zone") if _kid(z, "keepout")]
         for z in list(_kids(self.tree, "zone")) + fp_zones:   # footprint rule areas: e.g. an antenna keep-out
             nn = _kid(z, "net_name")

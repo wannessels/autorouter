@@ -78,6 +78,30 @@ def clearance_violations(board, result, s, tol=1e-3):
                 d = p.distance(vx, vy) - s.via_diameter / 2
                 if d < max(cl(nv), cl(p.net), p.clearance) - tol:
                     out.append(f"via {nv} vs pad {p.ref} ({p.net}): {d:.3f} mm")
+    out += _hole_violations(board, segs, vias, s, tol)
+    return out
+
+
+def _hole_violations(board, segs, vias, s, tol):
+    """Drill to other nets' copper (KiCad's hole_clearance)."""
+    out = []
+    hc = s.hole_clearance
+    holes = [(nv, vx, vy, s.via_drill / 2, "new via") for nv, (vx, vy) in vias] + \
+        [(v.net, v.x, v.y, (v.drill or s.via_drill) / 2, "existing via") for v in board.vias]
+    for nh, hx, hy, r, what in holes:
+        for ns, sg, ws in segs:
+            if ns != nh and seg_point_dist(hx, hy, *sg[:4]) - ws / 2 - r < hc - tol:
+                out.append(f"{what} {nh} drill vs track {ns}")
+        if what == "new via":
+            for t in board.tracks:
+                if t.net != nh and seg_point_dist(hx, hy, t.x1, t.y1, t.x2, t.y2) - t.width / 2 - r < hc - tol:
+                    out.append(f"new via {nh} drill vs existing track {t.net}")
+            for p in board.pads:
+                if p.net != nh and p.distance(hx, hy) - r < hc - tol:
+                    out.append(f"new via {nh} drill vs pad {p.ref} ({p.net})")
+            for nv2, (x2, y2) in vias:
+                if nv2 != nh and math.hypot(x2 - hx, y2 - hy) - s.via_diameter / 2 - r < hc - tol:
+                    out.append(f"new via {nh} drill vs via {nv2}")
     return out
 
 

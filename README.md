@@ -306,12 +306,21 @@ python -m kicad_autorouter board.kicad_pcb --gif thinking.gif       # record the
 python -m kicad_autorouter board.kicad_pcb --live                   # watch in a window
 ```
 
-The CLI reads the `.kicad_pro` next to the board for the net classes (Default
-plus any other class, with its net assignments and wildcard patterns).
-Options include `--track-width --clearance --via-diameter --via-drill --grid
---layers F.Cu,B.Cu --passes --via-cost --include-zone-nets`. The core is pure
-Python with no dependencies. Only `--gif/--png/--live` need matplotlib (and
-Pillow for GIFs).
+The CLI reads the `.kicad_pro` with the same name next to the board for the net
+classes (Default plus any other class, with its net assignments and wildcard
+patterns). Without it, every net gets the default 0.25 mm track and 0.2 mm
+clearance, and the CLI warns. Options include `--track-width --clearance
+--via-diameter --via-drill --grid --layers F.Cu,B.Cu --passes --patience
+--via-cost --include-zone-nets --rip-up`. `--nets` takes a net with or without
+its sheet path (`GND` finds `/GND` when only one net fits). `--rip-up` removes
+the existing unlocked tracks and vias of the nets it routes and routes them
+again. The core is pure Python with no dependencies. Only `--gif/--png/--live`
+need matplotlib (and Pillow for GIFs).
+
+The exit status is 0 when every net is routed and 1 when some are left
+unrouted, so a `set -e` script stops there. The written file's pours are not
+refilled: refill them in KiCad (B) or check it with
+`kicad-cli pcb drc --refill-zones`.
 
 As a library:
 
@@ -334,7 +343,7 @@ pcb.add_routes(result, pcb.settings_from_project()); pcb.save("routed.kicad_pcb"
 | `kicad_autorouter/global_route.py` | coarse global routing: region capacities, PathFinder on region boundaries, corridors |
 | `kicad_autorouter/router.py` | A*, PathFinder passes, pour check, events, geometry output |
 | `kicad_autorouter/viz.py` | matplotlib live view / GIF / PNG |
-| `kicad_autorouter/kicad_pcb.py` | `.kicad_pcb` reader and writer (KiCad 6–9 S-expression format) |
+| `kicad_autorouter/kicad_pcb.py` | `.kicad_pcb` reader and writer (KiCad 6–10 S-expression format) |
 | `kicad_autorouter/plugin.json`, `ipc_action.py`, `requirements.txt` | KiCad 10 IPC plugin manifest and entry point |
 | `kicad_autorouter/install_plugin.py` | one-step installer for KiCad 10 (copy, enable API, remove old copies, check) |
 | `kicad_autorouter/check_install.py` | "why no button?" checker for KiCad 10 installs |
@@ -374,7 +383,8 @@ What's been tested:
 * Very crowded spots (e.g. a 0.5 mm-pitch regulator surrounded by its
   resistors on a 2-layer board) can leave a few short nets to finish by hand;
   they are listed with the nets they were fighting.
-* **Rule areas / keepouts are not read yet.** Check DRC if your board uses them.
+* Rule areas (keep-outs) that ban tracks or vias are read, footprint rule areas
+  included. Their other bans (pads, pours, footprints) do not apply to routing.
 * Odd pad shapes: custom pads use their exact outline (KiCad's own polygon in
   both plugins; rebuilt from the pad's primitives by the command line). Trapezoid
   and chamfered pads are exact in the plugins and slightly enlarged on the command

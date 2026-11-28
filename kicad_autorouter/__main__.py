@@ -7,13 +7,29 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import os
 import sys
 import time
 
 from .kicad_pcb import PcbFile
 from .model import RouteSettings
 from .problem import build_problem
-from .router import Router
+from .router import STALL_PASSES, Router
+
+
+def _board_net(name: str, names) -> str:
+    """The board's net for a name given without its sheet path (GND for /GND), when only
+    one net fits."""
+    if name in names:
+        return name
+    hits = sorted(n for n in names if n.rsplit("/", 1)[-1] == name)
+    if len(hits) == 1:
+        print(f"Net {name}: using {hits[0]}")
+        return hits[0]
+    if hits:
+        print(f"Net {name} is not on the board; did you mean {', '.join(hits)}?")
+    return name
 
 
 def main(argv=None) -> int:
@@ -38,10 +54,15 @@ def main(argv=None) -> int:
     ap.add_argument("--via-drill", type=float)
     ap.add_argument("--grid", type=float, help="grid pitch in mm (default: width + clearance)")
     ap.add_argument("--layers", help="comma-separated copper layers to use (default: all)")
-    ap.add_argument("--passes", type=int, help="maximum passes (default 40)")
+    ap.add_argument("--rip-up", action="store_true",
+                    help="remove the existing tracks and vias of the nets to route (--nets, or all) "
+                         "and route them again; locked copper stays")
+    ap.add_argument("--passes", type=int,
+                    help="maximum passes (default 40); a run also stops early after --patience passes "
+                         "without progress")
     ap.add_argument("--patience", type=int,
-                    help="passes without a new low in conflicts before the remaining nets are dropped "
-                         "(a fine grid converges less steadily: try 30)")
+                    help=f"passes without a new low in conflicts before the remaining nets are dropped "
+                         f"(default {STALL_PASSES}; a fine grid converges less steadily: try 30)")
     ap.add_argument("--via-cost", type=float)
     ap.add_argument("--no-global", action="store_true",
                     help="skip the coarse global-routing stage (slower on big boards)")
@@ -53,6 +74,7 @@ def main(argv=None) -> int:
     ap.add_argument("--live", action="store_true", help="show a live matplotlib window")
     ap.add_argument("-q", "--quiet", action="store_true")
     a = ap.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)          # progress shows up in a log file as it comes
 
     pcb = PcbFile(a.board)
     board = pcb.board()
@@ -76,7 +98,12 @@ def main(argv=None) -> int:
     s.skip_zone_nets = not a.include_zone_nets
     s.tracks_on_planes = a.tracks_on_planes
     s.pin_gaps = a.pin_gaps
-    nets = [x.strip() for x in a.nets.split(",")] if a.nets else None
+    pro = os.path.splitext(a.board)[0] + ".kicad_pro"
+    if not os.path.exists(pro):
+        print(f"Warning: no {os.path.basename(pro)} next to the board, so no net classes: every net gets "
+              f"{s.track_width} mm tracks with {s.clearance} mm clearance")
+    names = set(board.nets()) | {t.net for t in board.tracks if t.net}
+    nets = [_board_net(x.strip(), names) for x in a.nets.split(",")] if a.nets else None
 
     if a.straighten_only:
         from .restraighten import detect_grid, straighten_existing
@@ -99,7 +126,15 @@ def main(argv=None) -> int:
         return 0
 
     from .problem import add_bars_to_result, same_net_bars
-    import dataclasses
+    ripped = []
+    if a.rip_up:
+        # (pour nets the router leaves to their pour keep their copper: nothing would replace it)
+        sel = {n for n in (nets or board.nets()) if not (s.skip_zone_nets and n in board.zone_nets)}
+        ripped = [x for x in list(board.tracks) + list(board.vias) if x.net in sel and not x.locked]
+        gone = {id(x) for x in ripped}
+        board = dataclasses.replace(board, tracks=[t for t in board.tracks if id(t) not in gone],
+                                    vias=[v for v in board.vias if id(v) not in gone])
+        print(f"Rip-up: {len(ripped)} existing track segments and vias of {len(sel)} nets removed")
     bars = same_net_bars(board, s, nets)          # fine-pitch same-net neighbours
     board_plain = board
     if bars:
@@ -122,6 +157,9 @@ def main(argv=None) -> int:
     def cb(ev, d):
         if viz is not None:
             viz.callback(ev, d)
+        if not a.quiet and ev == "engine":
+            print("  search core: compiled" if d["native"] else
+                  "  search core: Python (no compiled core for this computer - slower)")
         if not a.quiet and ev == "global_done":
             print(f"  global plan: {d['regions']} regions, {d['passes']} pass(es), "
                   f"{d['overflow']} over-full boundaries ({d['seconds']:.2f}s)")
@@ -144,12 +182,16 @@ def main(argv=None) -> int:
     print(res.summary())
 
     out = a.output or a.board.replace(".kicad_pcb", "-routed.kicad_pcb")
+    old_items = list(old_items or ()) + ripped
     if old_items:
         # existing copper that was re-shaped too goes; what was kept stays in the file as it is
         pcb.remove_items([x for x in old_items if hasattr(x, "x1")], [x for x in old_items if not hasattr(x, "x1")])
     n = pcb.add_routes(res, s)
     pcb.save(out)
     print(f"Wrote {n} items to {out}")
+    if board.zone_nets:
+        print("Note: the pours in the written file are not refilled. Refill them (B in KiCad) or run "
+              "kicad-cli pcb drc --refill-zones before reading DRC.")
     if viz is not None:
         if a.png:
             viz.save_png(a.png)

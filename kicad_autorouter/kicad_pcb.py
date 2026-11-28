@@ -495,7 +495,7 @@ class PcbFile:
                     zc = _kid(cp, "clearance") if cp else None
                     if zc:
                         b.zone_clearance[name] = max(b.zone_clearance.get(name, 0.0), _f(zc[1]))
-        return b
+        return b.sort_items()
 
     # -------------------------------------------------------------- settings
     def settings_from_project(self, base: Optional[RouteSettings] = None) -> RouteSettings:

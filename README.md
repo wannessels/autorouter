@@ -405,6 +405,9 @@ What's been tested:
   in parallel, nets that cannot see each other kept grabbing the same cells.
   Boards with fewer than 20 nets stay on one core (starting workers costs ~1 s).
   `--workers N` on the command line overrides the automatic choice.
+* Repeatable: the router uses no randomness. The same board gives the same
+  routing, whatever the number of cores and whatever order the items are
+  stored in the file, so there is no seed to set.
 
 ## Ideas for next steps
 

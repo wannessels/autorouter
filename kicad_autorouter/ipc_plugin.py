@@ -385,7 +385,7 @@ class IpcBoard:
                             self.selected.add(p.net.name)
         except Exception:
             pass
-        self.board = b
+        self.board = b.sort_items()
         self.nets = {n.name: n for n in kboard.get_nets()}
         self.settings = self._settings()
 

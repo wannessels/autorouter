@@ -1522,6 +1522,26 @@ class Router:
                 self.pool.close()
                 self.pool = None
 
+    def _route_pass1_alone(self, to_route: List[NetJob]) -> None:
+        """Pass 1 on one core the way the cores do it: every net against the same board,
+        all booked once every net is routed - so one core and many give the same routing."""
+        for job in to_route:
+            self._rip_up(job)
+        done = []
+        for k, job in enumerate(to_route):
+            self._route_net(job, 1)
+            found = job.paths, job.resources, job.failed, job.fail_notes
+            self._rip_up(job)
+            job.paths, job.resources, job.failed, job.fail_notes = found
+            done.append(job)
+            self._emit("net_done", **{"pass": 1, "net": job.name, "index": k + 1, "total": len(to_route)})
+            if self._cancel:
+                break
+        for job in done:
+            for c in job.resources:
+                self.occ[c] += 1
+            self._book_keepout(job)
+
     # ------------------------------------------------------------------ multi-core
     def _start_pool(self, n_nets: int) -> None:
         from . import parallel
@@ -1543,6 +1563,9 @@ class Router:
             self._emit("workers", **{"workers": 1, "error": f"{type(exc).__name__}: {exc}"})
 
     def _route_pass(self, to_route: List[NetJob], pass_no: int) -> None:
+        if self.pool is None and pass_no == 1:
+            self._route_pass1_alone(to_route)
+            return
         if self.pool is None or pass_no > 1:
             if self.pool is not None:        # the parallel part is over: free the cores
                 self.pool.close()

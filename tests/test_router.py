@@ -233,6 +233,28 @@ def test_parallel_first_pass_gives_a_legal_complete_result():
     assert acute_junctions(b, res) == []
 
 
+def _copper(res):
+    return {n: (sorted(nr.segments), sorted(nr.vias)) for n, nr in res.nets.items()}
+
+
+def test_one_core_and_several_give_the_same_routing():
+    b = mixed_board()
+    assert _copper(route(b, RouteSettings(workers=1))) == _copper(route(b, RouteSettings(workers=2)))
+
+
+def test_the_order_of_the_items_in_the_file_does_not_change_the_routing():
+    import random
+    from kicad_autorouter.kicad_pcb import PcbFile
+    b = PcbFile(os.path.join(ROOT, "examples", "demo_routed.kicad_pcb")).board()
+    b.tracks = [t for t in b.tracks if t.net not in ("D1", "D2")]
+    s = RouteSettings(workers=1)
+    first = _copper(route(b, s, nets=["D1", "D2"]))
+    rnd = random.Random(4)
+    for items in (b.pads, b.tracks, b.vias):
+        rnd.shuffle(items)
+    assert _copper(route(b.sort_items(), s, nets=["D1", "D2"])) == first
+
+
 def test_failed_net_says_what_walls_it_in():
     """A pad boxed in by another net's existing track: the summary names the pad and
     the copper, instead of just 'Incomplete'."""

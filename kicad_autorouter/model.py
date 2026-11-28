@@ -233,6 +233,17 @@ class Board:
     def nets(self) -> List[str]:
         return sorted({p.net for p in self.pads if p.net})
 
+    def sort_items(self) -> "Board":
+        """Put pads, tracks, vias and holes in one fixed order, so the routing does not
+        depend on the order KiCad stored them in (which follows its random item ids)."""
+        def r(v):
+            return round(v, 4)
+        self.pads.sort(key=lambda p: (p.ref, p.net, r(p.x), r(p.y)))
+        self.tracks.sort(key=lambda t: (t.net, t.layer, sorted([(r(t.x1), r(t.y1)), (r(t.x2), r(t.y2))]), r(t.width)))
+        self.vias.sort(key=lambda v: (v.net, r(v.x), r(v.y)))
+        self.holes.sort()
+        return self
+
 
 @dataclass
 class RouteSettings:

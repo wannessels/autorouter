@@ -137,6 +137,22 @@ def test_pour_net_copper_inside_its_pour_is_an_obstacle_for_the_other_nets():
     assert connected(Board(b.copper_layers, b.outline, b.pads), after, "A", s.track_width)
 
 
+def test_copper_in_many_short_pieces_still_joins_up():
+    from kicad_autorouter.problem import net_status
+    b = PcbFile(os.path.join(ROOT, "examples", "demo_routed.kicad_pcb")).board()
+    before = net_status(b)
+    pieces = []
+    for t in b.tracks:
+        n = max(1, int(math.hypot(t.x2 - t.x1, t.y2 - t.y1) / 0.3))
+        for k in range(n):
+            pieces.append(Track(t.net, t.x1 + (t.x2 - t.x1) * k / n, t.y1 + (t.y2 - t.y1) * k / n,
+                                t.x1 + (t.x2 - t.x1) * (k + 1) / n, t.y1 + (t.y2 - t.y1) * (k + 1) / n,
+                                t.width, t.layer))
+    b.tracks = pieces
+    assert len(pieces) > 4 * 128
+    assert net_status(b) == before and "routed" in before.values()
+
+
 # ------------------------------------------------------------------ fine grid
 @pytest.mark.parametrize("pitch", [0.15, 0.225])
 def test_a_grid_finer_than_width_plus_clearance_is_legal(pitch):

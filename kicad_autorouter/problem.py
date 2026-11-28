@@ -388,10 +388,23 @@ def _cluster(net: str, pads: List[Pad], tracks: List[Track], vias: List[Via]):
         return bool(A.layers & B.layers) and (A.distance(B.x, B.y) <= 0.0 or
                                               B.distance(A.x, A.y) <= 0.0)
 
-    for i in range(len(items)):
-        for j in range(i + 1, len(items)):
-            if touches(items[i], items[j]):
+    def box(it):
+        k, X = it
+        if k == "t":
+            m = X.width / 2 + 1e-6
+            return min(X.x1, X.x2) - m, min(X.y1, X.y2) - m, max(X.x1, X.x2) + m, max(X.y1, X.y2) + m
+        r = X.diameter / 2 if k == "v" else X.radius()
+        return X.x - r, X.y - r, X.x + r, X.y + r
+    # only items whose boxes overlap can touch: sweep along x
+    boxes = [box(it) for it in items]
+    active: List[int] = []
+    for i in sorted(range(len(items)), key=lambda i: boxes[i][0]):
+        x0, y0, _, y1 = boxes[i]
+        active = [j for j in active if boxes[j][2] >= x0]
+        for j in active:
+            if boxes[j][1] <= y1 and boxes[j][3] >= y0 and find(i) != find(j) and touches(items[i], items[j]):
                 union(i, j)
+        active.append(i)
     groups: Dict[int, list] = {}
     for i, it in enumerate(items):
         groups.setdefault(find(i), []).append(it)
@@ -1498,11 +1511,16 @@ def _add_escapes(jobs: List[NetJob], grid: Grid, owner: List[int], s: RouteSetti
                 span = max(reach, pad.radius() + LOCAL_R)        # how far the local search may go
                 near = [q for q in pads_all if (q.net != job.name or not q.net) and
                         abs(q.x - pad.x) < span + q.radius() + 1.0 and abs(q.y - pad.y) < span + q.radius() + 1.0]
-                trk = [tr for tr in board.tracks if tr.net != job.name and
-                       min(tr.x1, tr.x2) < pad.x + span + 1 and max(tr.x1, tr.x2) > pad.x - span - 1 and
-                       min(tr.y1, tr.y2) < pad.y + span + 1 and max(tr.y1, tr.y2) > pad.y - span - 1]
-                vias = [v for v in board.vias if v.net != job.name and
-                        abs(v.x - pad.x) < span + 1 and abs(v.y - pad.y) < span + 1]
+                trk: Dict[str, list] = {}
+                for tr in board.tracks:
+                    if tr.net != job.name and \
+                            min(tr.x1, tr.x2) < pad.x + span + 1 and max(tr.x1, tr.x2) > pad.x - span - 1 and \
+                            min(tr.y1, tr.y2) < pad.y + span + 1 and max(tr.y1, tr.y2) > pad.y - span - 1:
+                        trk.setdefault(tr.layer, []).append(
+                            (tr, tr.width / 2 + max(clj, s.clearance_for(tr.net)),
+                             min(tr.x1, tr.x2), max(tr.x1, tr.x2), min(tr.y1, tr.y2), max(tr.y1, tr.y2)))
+                vias = [(v, v.diameter / 2 + max(clj, s.clearance_for(v.net))) for v in board.vias
+                        if v.net != job.name and abs(v.x - pad.x) < span + 1 and abs(v.y - pad.y) < span + 1]
                 holes = [h for h in board.holes if abs(h[0] - pad.x) < span + 2 and abs(h[1] - pad.y) < span + 2]
 
                 def stub_ok(bx, by, lname, hw=w2, ax=None, ay=None, pad=pad, near=near, trk=trk, vias=vias, holes=holes):
@@ -1521,13 +1539,17 @@ def _add_escapes(jobs: List[NetJob], grid: Grid, owner: List[int], s: RouteSetti
                         need = hw + max(clj, s.clearance_for(q.net), q.clearance) - 1e-6
                         if q.seg_distance(px_, py_, bx, by) < need:
                             return False
-                    for tr in trk:
-                        if tr.layer == lname and _seg_seg_dist(px_, py_, bx, by, tr.x1, tr.y1, tr.x2, tr.y2) \
-                                < tr.width / 2 + hw + max(clj, s.clearance_for(tr.net)) - 1e-6:
+                    for tr, r0, tx0, tx1, ty0, ty1 in trk.get(lname, ()):
+                        r = r0 + hw
+                        if tx1 < sx0 - r or tx0 > sx1 + r or ty1 < sy0 - r or ty0 > sy1 + r:
+                            continue
+                        if _seg_seg_dist(px_, py_, bx, by, tr.x1, tr.y1, tr.x2, tr.y2) < r - 1e-6:
                             return False
-                    for v in vias:
-                        if seg_point_dist(v.x, v.y, px_, py_, bx, by) \
-                                < v.diameter / 2 + hw + max(clj, s.clearance_for(v.net)) - 1e-6:
+                    for v, r0 in vias:
+                        r = r0 + hw
+                        if v.x < sx0 - r or v.x > sx1 + r or v.y < sy0 - r or v.y > sy1 + r:
+                            continue
+                        if seg_point_dist(v.x, v.y, px_, py_, bx, by) < r - 1e-6:
                             return False
                     for (hx, hy, hd) in holes:
                         if seg_point_dist(hx, hy, px_, py_, bx, by) < hd / 2 + hw + max(clj, s.hole_clearance):
